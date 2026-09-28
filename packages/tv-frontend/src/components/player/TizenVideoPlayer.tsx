@@ -1,0 +1,401 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+import JASSUB from 'jassub';
+import { useTranslation } from 'react-i18next';
+import { AvPlayPlayerAdapter, createAvPlayPlayerAdapter } from '@pelagica/tv-platform';
+import { useLayerActive } from '@/router';
+import { toast } from '@/components/ui/toast';
+import {
+    getJassubUnsupportedReason,
+    installVideoFrameCallbackFallback,
+    overrideVideoDimensions,
+} from './jassub';
+import type { VideoPlayerProps } from './types';
+
+const STALL_TIMEOUT_MS = 20_000;
+
+function stripVttMarkup(text: string) {
+    return text.replace(/<[^>]+>/g, '');
+}
+
+const TizenVideoPlayer = ({
+    src,
+    startTicks,
+    subtitles,
+    subtitleFonts,
+    onReady,
+    onPlaybackStalled,
+    pendingAudioSwitchSeekRef,
+    subtitleTrackIndex,
+    audioTrackIndex,
+    audioStreams,
+}: VideoPlayerProps) => {
+    const { t } = useTranslation('player');
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    const subtitleVideoRef = useRef<HTMLVideoElement | null>(null);
+    const assAnchorVideoRef = useRef<HTMLVideoElement | null>(null);
+    const assRendererRef = useRef<JASSUB | null>(null);
+    const adapterRef = useRef<AvPlayPlayerAdapter | null>(null);
+    const hasSeekedRef = useRef(false);
+    const onPlaybackStalledRef = useRef(onPlaybackStalled);
+    const stallTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const audioTrackIndexRef = useRef(audioTrackIndex);
+    const audioStreamsRef = useRef(audioStreams);
+    const [activeCueText, setActiveCueText] = useState('');
+    const [isBuffering, setIsBuffering] = useState(true);
+    const isLayerActive = useLayerActive();
+
+    useEffect(() => {
+        onPlaybackStalledRef.current = onPlaybackStalled;
+    }, [onPlaybackStalled]);
+
+    useEffect(() => {
+        audioTrackIndexRef.current = audioTrackIndex;
+        audioStreamsRef.current = audioStreams;
+    }, [audioTrackIndex, audioStreams]);
+
+    const clearStallTimeout = useCallback(() => {
+        if (stallTimeoutRef.current) {
+            clearTimeout(stallTimeoutRef.current);
+            stallTimeoutRef.current = null;
+        }
+    }, []);
+
+    const armStallTimeout = useCallback(() => {
+        clearStallTimeout();
+        stallTimeoutRef.current = setTimeout(() => {
+            stallTimeoutRef.current = null;
+            onPlaybackStalledRef.current?.();
+        }, STALL_TIMEOUT_MS);
+    }, [clearStallTimeout]);
+
+    // AVPlay hardware video plane is below HTML layer so we punch a hole in the HTML
+    useEffect(() => {
+        if (!isLayerActive) return;
+
+        const html = document.documentElement;
+        const body = document.body;
+        const prevHtmlBackground = html.style.background;
+        const prevBodyBackground = body.style.background;
+        html.style.background = 'transparent';
+        body.style.background = 'transparent';
+
+        return () => {
+            html.style.background = prevHtmlBackground;
+            body.style.background = prevBodyBackground;
+        };
+    }, [isLayerActive]);
+
+    useEffect(() => {
+        const avplay = window.webapis?.avplay;
+        if (!avplay) {
+            console.error('webapis.avplay is unavailable - is this running on a Tizen device?');
+            return;
+        }
+
+        const adapter = createAvPlayPlayerAdapter(avplay);
+        adapterRef.current = adapter;
+
+        avplay.setListener({
+            onbufferingstart: () => adapter.notifyWaiting(),
+            onbufferingprogress: (percent) => adapter.notifyBufferingProgress(percent),
+            onbufferingcomplete: () => {
+                clearStallTimeout();
+                adapter.notifyPlaying();
+            },
+            oncurrentplaytime: (currentTime) => {
+                clearStallTimeout();
+                adapter.notifyCurrentTime(currentTime);
+            },
+            onstreamcompleted: () => {
+                adapter.notifyEnded();
+                try {
+                    avplay.stop();
+                } catch (error) {
+                    console.error('Error stopping AVPlay after playback completed:', error);
+                }
+            },
+            onerror: (eventType) => {
+                console.error('AVPlay error:', eventType);
+                onPlaybackStalledRef.current?.();
+            },
+        });
+
+        const handleWaiting = () => setIsBuffering(true);
+        const handlePlaying = () => setIsBuffering(false);
+        adapter.on('waiting', handleWaiting);
+        adapter.on('playing', handlePlaying);
+
+        onReady?.(adapter);
+
+        return () => {
+            adapter.off('waiting', handleWaiting);
+            adapter.off('playing', handlePlaying);
+            clearStallTimeout();
+            adapter.dispose();
+            adapterRef.current = null;
+            try {
+                avplay.stop();
+            } catch {
+                // Nothing was playing
+            }
+            try {
+                avplay.close();
+            } catch {
+                // Nothing was open
+            }
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        const avplay = window.webapis?.avplay;
+        const adapter = adapterRef.current;
+        if (!avplay || !adapter || !src) return;
+
+        setIsBuffering(true);
+        let cancelled = false;
+        const pendingSeek = pendingAudioSwitchSeekRef.current;
+        pendingAudioSwitchSeekRef.current = null;
+        const resumeSeconds =
+            pendingSeek !== null
+                ? pendingSeek
+                : !hasSeekedRef.current && startTicks > 0
+                  ? startTicks / 10_000_000
+                  : null;
+
+        try {
+            avplay.stop();
+        } catch {
+            // Nothing was playing yet
+        }
+        try {
+            avplay.close();
+        } catch {
+            // Nothing was open yet
+        }
+
+        try {
+            avplay.open(src);
+
+            try {
+                avplay.setDisplayRect(0, 0, window.innerWidth, window.innerHeight);
+            } catch (error) {
+                console.error('AVPlay setDisplayRect() failed:', error);
+            }
+            try {
+                avplay.setDisplayMethod('PLAYER_DISPLAY_MODE_AUTO_ASPECT_RATIO');
+            } catch (error) {
+                console.error('AVPlay setDisplayMethod() failed:', error);
+            }
+
+            armStallTimeout();
+
+            avplay.prepareAsync(
+                () => {
+                    if (cancelled) return;
+                    adapter.notifyPrepared(avplay.getDuration());
+                    hasSeekedRef.current = true;
+
+                    // setSelectTrack('AUDIO', ...) is only valid once actually PLAYING
+                    const selectPreferredAudioTrack = () => {
+                        const streams = audioStreamsRef.current;
+                        const ordinal = streams?.findIndex(
+                            (s) => s.Index === audioTrackIndexRef.current
+                        );
+                        if (!streams || ordinal === undefined || ordinal < 0) return;
+                        try {
+                            const audioTracks = avplay
+                                .getTotalTrackInfo()
+                                .filter((track) => track.type === 'AUDIO');
+                            const target = audioTracks[ordinal];
+                            if (target) avplay.setSelectTrack('AUDIO', target.index);
+                        } catch (error) {
+                            console.error('AVPlay setSelectTrack(AUDIO) failed:', error);
+                        }
+                    };
+
+                    const startPlayback = () => {
+                        if (cancelled) return;
+                        adapter.play();
+                        adapter.notifyPlaying();
+                        selectPreferredAudioTrack();
+                    };
+
+                    if (resumeSeconds && resumeSeconds > 0) {
+                        avplay.seekTo(Math.round(resumeSeconds * 1000), startPlayback, (error) => {
+                            console.error('AVPlay seekTo() failed:', error);
+                            startPlayback();
+                        });
+                    } else {
+                        startPlayback();
+                    }
+                },
+                (error) => {
+                    console.error('AVPlay prepare failed:', error);
+                    clearStallTimeout();
+                    onPlaybackStalledRef.current?.();
+                }
+            );
+        } catch (error) {
+            console.error('Failed to open AVPlay source:', error);
+            clearStallTimeout();
+            onPlaybackStalledRef.current?.();
+        }
+
+        return () => {
+            cancelled = true;
+            clearStallTimeout();
+        };
+    }, [src, startTicks, pendingAudioSwitchSeekRef, armStallTimeout, clearStallTimeout]);
+
+    const activeSubtitle =
+        subtitleTrackIndex !== null ? (subtitles?.[subtitleTrackIndex] ?? null) : null;
+
+    useEffect(() => {
+        setActiveCueText('');
+    }, [activeSubtitle]);
+
+    // we fake a video element for ASS subtitles because the AVPlay video plane is below the HTML layer and we can't use a normal <video> element for playback
+    useEffect(() => {
+        const anchor = assAnchorVideoRef.current;
+        const adapter = adapterRef.current;
+        if (!anchor || !adapter) return;
+
+        if (!assRendererRef.current) {
+            if (!activeSubtitle || activeSubtitle.format !== 'ass') return;
+
+            const unsupportedReason = getJassubUnsupportedReason();
+            if (unsupportedReason) {
+                console.error(
+                    `ASS subtitles unsupported on this device (missing ${unsupportedReason})`
+                );
+                toast.add({ title: t('assSubtitlesUnsupported'), type: 'error' });
+                return;
+            }
+
+            try {
+                overrideVideoDimensions(anchor, anchor.clientWidth, anchor.clientHeight);
+                installVideoFrameCallbackFallback(
+                    anchor,
+                    () => adapter.getCurrentTime(),
+                    () => ({ width: anchor.clientWidth, height: anchor.clientHeight })
+                );
+                const renderer = new JASSUB({
+                    video: anchor,
+                    subUrl: activeSubtitle.src,
+                    fonts: subtitleFonts,
+                });
+                assRendererRef.current = renderer;
+
+                const readyTimeout = setTimeout(() => {
+                    console.error(
+                        '[JASSUB] renderer.ready did not settle within 8s - the worker likely hung during init'
+                    );
+                    toast.add({ title: t('assSubtitlesUnsupported'), type: 'error' });
+                }, 8000);
+
+                renderer.ready
+                    .then(() => clearTimeout(readyTimeout))
+                    .catch((error) => {
+                        clearTimeout(readyTimeout);
+                        console.error('Error initializing ASS subtitle renderer:', error);
+                        toast.add({ title: t('assSubtitlesUnsupported'), type: 'error' });
+                    });
+
+                return () => clearTimeout(readyTimeout);
+            } catch (error) {
+                console.error('Failed to create ASS subtitle renderer:', error);
+                toast.add({ title: t('assSubtitlesUnsupported'), type: 'error' });
+            }
+            return;
+        }
+
+        const renderer = assRendererRef.current;
+        renderer.ready
+            .then(() => {
+                // Bail out if the renderer was replaced/destroyed while we were waiting
+                if (assRendererRef.current !== renderer) return;
+
+                if (!activeSubtitle || activeSubtitle.format !== 'ass') {
+                    renderer.renderer.freeTrack();
+                } else {
+                    renderer.renderer.setTrackByUrl(activeSubtitle.src);
+                }
+            })
+            .catch((error) => console.error('Error updating ASS subtitles:', error));
+    }, [activeSubtitle, subtitleFonts, t]);
+
+    useEffect(() => {
+        return () => {
+            assRendererRef.current?.destroy();
+            assRendererRef.current = null;
+        };
+    }, []);
+
+    useEffect(() => {
+        const adapter = adapterRef.current;
+        if (!adapter || activeSubtitle?.format !== 'vtt') return;
+
+        const updateActiveCue = () => {
+            const cues = subtitleVideoRef.current?.textTracks?.[0]?.cues;
+            if (!cues) {
+                setActiveCueText('');
+                return;
+            }
+
+            const time = adapter.getCurrentTime();
+            let text = '';
+            for (let i = 0; i < cues.length; i++) {
+                const cue = cues[i] as VTTCue;
+                if (time >= cue.startTime && time <= cue.endTime) {
+                    text = text ? `${text}\n${stripVttMarkup(cue.text)}` : stripVttMarkup(cue.text);
+                }
+            }
+            setActiveCueText(text);
+        };
+
+        adapter.on('timeupdate', updateActiveCue);
+        return () => adapter.off('timeupdate', updateActiveCue);
+    }, [activeSubtitle]);
+
+    useEffect(() => {
+        const track = subtitleVideoRef.current?.textTracks?.[0];
+        if (track) track.mode = 'hidden';
+    }, [activeSubtitle]);
+
+    return (
+        <div ref={containerRef} className="w-full h-full overflow-hidden bg-transparent">
+            <video ref={subtitleVideoRef} style={{ display: 'none' }} muted preload="none">
+                {activeSubtitle?.format === 'vtt' && (
+                    <track
+                        key={activeSubtitle.src}
+                        kind="subtitles"
+                        src={activeSubtitle.src}
+                        default
+                    />
+                )}
+            </video>
+            <video
+                ref={assAnchorVideoRef}
+                muted
+                playsInline
+                className="absolute inset-0 w-full h-full bg-transparent pointer-events-none"
+            />
+            {activeCueText && (
+                <div className="absolute bottom-24 left-0 right-0 flex justify-center px-8 pointer-events-none z-10">
+                    <span className="max-w-3xl text-center text-white text-2xl font-medium whitespace-pre-line [text-shadow:0_1px_4px_rgb(0_0_0_/_80%)]">
+                        {activeCueText}
+                    </span>
+                </div>
+            )}
+            {isBuffering && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+                    <Loader2 className="h-10 w-10 animate-spin text-white" />
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default TizenVideoPlayer;

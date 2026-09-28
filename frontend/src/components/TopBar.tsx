@@ -1,0 +1,962 @@
+import { useState, useRef, useEffect, type CSSProperties } from 'react';
+import { Link, useNavigate } from 'react-router';
+import {
+    ChartLine,
+    Check,
+    ChevronDown,
+    ChevronLeft,
+    ChevronRight,
+    ChevronsUpDown,
+    Copy,
+    DotIcon,
+    ExternalLink,
+    Fingerprint,
+    Globe,
+    House,
+    ImageIcon,
+    Laptop,
+    Library,
+    LogIn,
+    LogOut,
+    Minus,
+    Moon,
+    Music,
+    Search,
+    Settings,
+    Settings2,
+    Square,
+    Sun,
+    Telescope,
+    TriangleAlert,
+    Tv,
+    X,
+} from 'lucide-react';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuLabel,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+    DropdownMenuSub,
+    DropdownMenuSubContent,
+    DropdownMenuSubTrigger,
+    DropdownMenuPortal,
+} from '@/components/ui/dropdown-menu';
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+    DialogTrigger,
+} from '@/components/ui/dialog';
+import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+    Command,
+    CommandEmpty,
+    CommandGroup,
+    CommandInput,
+    CommandItem,
+    CommandList,
+} from '@/components/ui/command';
+import {
+    Select,
+    SelectContent,
+    SelectGroup,
+    SelectItem,
+    SelectLabel,
+    SelectTrigger,
+    SelectValue,
+} from '@/components/ui/select';
+import { Label } from '@/components/ui/label';
+import { useCurrentUser } from '@pelagica/core';
+import { useUserViews } from '@pelagica/core';
+import { useConfig } from '@pelagica/core';
+import { useTheme } from '@/components/theme-provider';
+import { getEffectiveTheme } from '@/utils/effectiveTheme';
+import { logout } from '@pelagica/core';
+import { getUserProfileImageUrl } from '@pelagica/core';
+import { withBasePath } from '@pelagica/core';
+import { SUPPORTED_LIBRARY_COLLECTION_TYPES } from '../utils/itemTypes';
+import { DynamicIcon, type IconName } from 'lucide-react/dynamic';
+import { useTranslation } from 'react-i18next';
+import i18n from 'i18next';
+import { useUpdateUserConfiguration } from '@pelagica/core';
+import { useAuthorizeQuickConnect } from '@pelagica/core';
+import { useSeerrLoginStatus } from '@pelagica/core';
+import { useSeerrLogout } from '@pelagica/core';
+import { SeerrLoginDialog } from '@/components/SeerrLoginDialog';
+import { toast } from 'sonner';
+import { iso6392 } from 'iso-639-2';
+import { cn } from '@/lib/utils';
+import {
+    clearLocalTheme,
+    getLocalTheme,
+    LOCAL_THEME_PELAGICA_DEFAULT,
+    LOCAL_THEME_SERVER_DEFAULT,
+    saveLocalTheme,
+} from '@/utils/localTheme';
+import { useThemes } from '@pelagica/core';
+import { useQueryClient } from '@tanstack/react-query';
+import { SUPPORTED_LANGUAGES } from '@pelagica/core/i18n';
+import {
+    isDesktopApp,
+    isMacOS,
+    getAppIconOptions,
+    getAppIcon,
+    setAppIcon,
+    minimiseWindow,
+    toggleMaximiseWindow,
+    isWindowMaximised,
+    closeWindow,
+    onWindowMaximiseChange,
+    openExternalUrl,
+} from '../utils/desktopApp';
+import { ExternalAnchor } from './ExternalAnchor';
+
+const noDragStyle = { '--wails-draggable': 'no-drag' } as CSSProperties;
+
+const AuthorizeQuickConnectDialog = ({
+    onAuthorize,
+    isLoading,
+    hasSuccess,
+    hasError,
+}: {
+    onAuthorize: (code: string) => void;
+    isLoading: boolean;
+    hasSuccess: boolean;
+    hasError: boolean;
+}) => {
+    const { t } = useTranslation('sidebar');
+    const [code, setCode] = useState('');
+    const [open, setOpen] = useState(false);
+    const authorizedCodeRef = useRef<string | null>(null);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const successTimeoutRef = useRef<any | null>(null);
+    const prevErrorRef = useRef(false);
+    const prevOpenRef = useRef(false);
+
+    useEffect(() => {
+        if (prevOpenRef.current && !open) {
+            queueMicrotask(() => {
+                setCode('');
+                authorizedCodeRef.current = null;
+                prevErrorRef.current = false;
+                if (successTimeoutRef.current) {
+                    clearTimeout(successTimeoutRef.current);
+                    successTimeoutRef.current = null;
+                }
+            });
+        }
+        prevOpenRef.current = open;
+    }, [open]);
+
+    useEffect(() => {
+        if (code.length === 6 && !hasSuccess && !isLoading && authorizedCodeRef.current !== code) {
+            authorizedCodeRef.current = code;
+            onAuthorize(code);
+        }
+    }, [code, onAuthorize, hasSuccess, isLoading]);
+
+    useEffect(() => {
+        if (hasSuccess && !successTimeoutRef.current) {
+            successTimeoutRef.current = setTimeout(() => {
+                setOpen(false);
+                successTimeoutRef.current = null;
+            }, 1500);
+        }
+    }, [hasSuccess]);
+
+    useEffect(() => {
+        if (hasError && !prevErrorRef.current && code.length === 6) {
+            queueMicrotask(() => {
+                setCode('');
+                authorizedCodeRef.current = null;
+            });
+        }
+        prevErrorRef.current = hasError;
+    }, [hasError, code.length]);
+
+    return (
+        <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+                <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                    <Fingerprint className="text-muted-foreground" />
+                    {t('quick_connect')}
+                </DropdownMenuItem>
+            </DialogTrigger>
+            <DialogContent className="max-h-[80vh] overflow-y-auto">
+                <DialogHeader>
+                    <DialogTitle>{t('authorize_quick_connect')}</DialogTitle>
+                </DialogHeader>
+                <p className="text-sm text-muted-foreground mb-4">
+                    {t('enter_quick_connect_code')}
+                </p>
+                <div className="flex justify-center max-w-full overflow-hidden">
+                    <InputOTP
+                        maxLength={6}
+                        onChange={setCode}
+                        value={code}
+                        disabled={isLoading || hasSuccess}
+                    >
+                        <InputOTPGroup className="gap-0 sm:gap-2 sm:*:data-[slot=input-otp-slot]:rounded-md sm:*:data-[slot=input-otp-slot]:border">
+                            <InputOTPSlot index={0} />
+                            <InputOTPSlot index={1} />
+                            <InputOTPSlot index={2} />
+                        </InputOTPGroup>
+                        <div
+                            role="separator"
+                            className="text-muted-foreground hidden sm:inline-flex"
+                        >
+                            <DotIcon />
+                        </div>
+                        <InputOTPGroup className="gap-0 sm:gap-2 sm:*:data-[slot=input-otp-slot]:rounded-md sm:*:data-[slot=input-otp-slot]:border">
+                            <InputOTPSlot index={3} />
+                            <InputOTPSlot index={4} />
+                            <InputOTPSlot index={5} />
+                        </InputOTPGroup>
+                    </InputOTP>
+                </div>
+                {hasError && (
+                    <p className="text-sm mt-4 text-destructive text-center flex items-center justify-center gap-2">
+                        <TriangleAlert size={16} />
+                        {t('quick_connect_authorization_failed')}
+                    </p>
+                )}
+                {hasSuccess && (
+                    <p className="text-sm mt-4 text-primary text-center flex items-center justify-center gap-2">
+                        <Check size={16} />
+                        {t('quick_connect_authorized')}
+                    </p>
+                )}
+            </DialogContent>
+        </Dialog>
+    );
+};
+
+const LanguageCombobox = ({
+    onSelect,
+    selected,
+    open,
+    onOpenChange,
+}: {
+    onSelect: (code: string) => void;
+    selected: string;
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+}) => {
+    const { t } = useTranslation('sidebar');
+    return (
+        <Popover open={open} onOpenChange={onOpenChange}>
+            <PopoverTrigger asChild>
+                <Button variant="outline" role="combobox" className="w-full justify-between">
+                    {iso6392.find((l) => l.iso6392T === selected || l.iso6392B === selected)
+                        ? `${iso6392.find((l) => l.iso6392T === selected || l.iso6392B === selected)!.name} (${selected})`
+                        : t('select_language')}
+                    <ChevronsUpDown className="opacity-50" />
+                </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-70 max-w-full p-0">
+                <Command>
+                    <CommandInput placeholder="Search language..." className="h-9" />
+                    <CommandList>
+                        <CommandEmpty>No language found.</CommandEmpty>
+                        <CommandGroup>
+                            {iso6392
+                                .slice()
+                                .sort((a, b) => a.name.localeCompare(b.name))
+                                .map((lang) => {
+                                    const code = lang.iso6392T || lang.iso6392B;
+                                    return (
+                                        <CommandItem
+                                            key={code}
+                                            value={lang.name}
+                                            onSelect={() => onSelect(code)}
+                                        >
+                                            {lang.name} ({code})
+                                            <Check
+                                                className={cn(
+                                                    'ml-auto',
+                                                    selected === code ? 'opacity-100' : 'opacity-0'
+                                                )}
+                                            />
+                                        </CommandItem>
+                                    );
+                                })}
+                        </CommandGroup>
+                    </CommandList>
+                </Command>
+            </PopoverContent>
+        </Popover>
+    );
+};
+
+const UserMenu = () => {
+    const { t } = useTranslation('sidebar');
+    const navigate = useNavigate();
+    const queryClient = useQueryClient();
+    const { theme, setTheme } = useTheme();
+    const { data: user } = useCurrentUser();
+    const updateUserConfiguration = useUpdateUserConfiguration();
+    const [audioLanguageOpen, setAudioLanguageOpen] = useState(false);
+    const [subtitleLanguageOpen, setSubtitleLanguageOpen] = useState(false);
+    const authorizeQuickConnect = useAuthorizeQuickConnect();
+    const [quickConnectLoading, setQuickConnectLoading] = useState(false);
+    const [quickConnectSuccess, setQuickConnectSuccess] = useState(false);
+    const [quickConnectError, setQuickConnectError] = useState(false);
+    const [localTheme, setLocalTheme] = useState<string | null>(
+        getLocalTheme() ?? LOCAL_THEME_SERVER_DEFAULT
+    );
+    const { data: themes, isLoading: isLoadingThemes } = useThemes();
+    const { config } = useConfig();
+    const { data: isSeerrLoggedIn } = useSeerrLoginStatus();
+    const seerrLogout = useSeerrLogout();
+    const [appIconOptions, setAppIconOptions] = useState<string[]>([]);
+    const [selectedAppIcon, setSelectedAppIcon] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!isDesktopApp()) return;
+        getAppIconOptions().then(setAppIconOptions);
+        getAppIcon().then(setSelectedAppIcon);
+    }, []);
+
+    const handleSelectAppIcon = (name: string) => {
+        setSelectedAppIcon(name);
+        setAppIcon(name);
+    };
+
+    const onAuthorizeQuickConnect = (code: string) => {
+        setQuickConnectLoading(true);
+        setQuickConnectSuccess(false);
+        setQuickConnectError(false);
+        authorizeQuickConnect
+            .mutateAsync({ code })
+            .then(() => {
+                setQuickConnectLoading(false);
+                setQuickConnectSuccess(true);
+            })
+            .catch((err) => {
+                if (err?.response?.status === 500) {
+                    setQuickConnectLoading(false);
+                    setQuickConnectSuccess(true);
+                } else {
+                    setQuickConnectLoading(false);
+                    setQuickConnectError(true);
+                }
+            });
+    };
+
+    if (!user?.Id) return null;
+
+    const profileImageUrl = getUserProfileImageUrl(user.Id);
+    const userName = user?.Name || t('unknown_user');
+    const isAdmin = user?.Policy?.IsAdministrator;
+    const initials = userName
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .toUpperCase();
+
+    return (
+        <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="sm" className="flex items-center gap-2 px-2">
+                    <Avatar className="h-6 w-6 rounded-lg">
+                        <AvatarImage src={profileImageUrl} alt={userName} />
+                        <AvatarFallback className="rounded-lg text-xs">{initials}</AvatarFallback>
+                    </Avatar>
+                    <span className="hidden sm:block text-sm font-medium max-w-32 truncate">
+                        {userName}
+                    </span>
+                    <ChevronDown className="h-3.5 w-3.5 opacity-50" />
+                </Button>
+            </DropdownMenuTrigger>
+
+            <DropdownMenuContent align="end" className="w-56 rounded-lg">
+                <DropdownMenuLabel className="p-0 font-normal">
+                    <div className="flex items-center gap-2 px-1 py-1.5">
+                        <Avatar className="h-8 w-8 rounded-lg">
+                            <AvatarImage src={profileImageUrl} alt={userName} />
+                            <AvatarFallback className="rounded-lg text-xs">
+                                {initials}
+                            </AvatarFallback>
+                        </Avatar>
+                        <span className="truncate text-sm font-medium">{userName}</span>
+                    </div>
+                </DropdownMenuLabel>
+
+                <DropdownMenuSeparator />
+
+                {/* Theme */}
+                <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                        {theme === 'light' ? (
+                            <Sun className="text-muted-foreground" />
+                        ) : theme === 'dark' ? (
+                            <Moon className="text-muted-foreground" />
+                        ) : (
+                            <Laptop className="text-muted-foreground" />
+                        )}
+                        {t('theme')}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuPortal>
+                        <DropdownMenuSubContent>
+                            <DropdownMenuItem onClick={() => setTheme('light')}>
+                                <Sun className="text-muted-foreground" />
+                                {t('light')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setTheme('dark')}>
+                                <Moon className="text-muted-foreground" />
+                                {t('dark')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setTheme('system')}>
+                                <Laptop className="text-muted-foreground" />
+                                {t('system')}
+                            </DropdownMenuItem>
+                        </DropdownMenuSubContent>
+                    </DropdownMenuPortal>
+                </DropdownMenuSub>
+
+                {/* Language */}
+                <DropdownMenuSub>
+                    <DropdownMenuSubTrigger>
+                        <Globe className="text-muted-foreground" />
+                        {t('language')}
+                    </DropdownMenuSubTrigger>
+                    <DropdownMenuPortal>
+                        <DropdownMenuSubContent>
+                            {SUPPORTED_LANGUAGES.map(({ code, Flag, label }) => (
+                                <DropdownMenuItem
+                                    key={code}
+                                    onClick={() => i18n.changeLanguage(code)}
+                                >
+                                    <span className="inline-block w-6 h-4 shrink-0 overflow-hidden">
+                                        <Flag style={{ width: '100%', height: '100%' }} />
+                                    </span>
+                                    {label}
+                                </DropdownMenuItem>
+                            ))}
+                        </DropdownMenuSubContent>
+                    </DropdownMenuPortal>
+                </DropdownMenuSub>
+
+                {/* App Icon (desktop app and macOS only) */}
+                {isDesktopApp() && isMacOS() && appIconOptions.length > 0 && (
+                    <DropdownMenuSub>
+                        <DropdownMenuSubTrigger>
+                            <ImageIcon className="text-muted-foreground" />
+                            {t('app_icon')}
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuPortal>
+                            <DropdownMenuSubContent>
+                                {appIconOptions.map((name) => (
+                                    <DropdownMenuItem
+                                        key={name}
+                                        onClick={() => handleSelectAppIcon(name)}
+                                    >
+                                        <img
+                                            src={`appicons/${name}.png`}
+                                            alt={t(`app_icon_${name}`)}
+                                            height={32}
+                                            width={32}
+                                        />
+                                        {t(`app_icon_${name}`)}
+                                        {selectedAppIcon === name && (
+                                            <Check className="ml-auto h-4 w-4" />
+                                        )}
+                                    </DropdownMenuItem>
+                                ))}
+                            </DropdownMenuSubContent>
+                        </DropdownMenuPortal>
+                    </DropdownMenuSub>
+                )}
+
+                {/* Preferences */}
+                <Dialog>
+                    <DialogTrigger asChild>
+                        <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+                            <Settings2 className="text-muted-foreground" />
+                            {t('preferences')}
+                        </DropdownMenuItem>
+                    </DialogTrigger>
+                    <DialogContent className="max-h-[80vh] overflow-y-auto">
+                        <DialogHeader>
+                            <DialogTitle>{t('preferences')}</DialogTitle>
+                        </DialogHeader>
+                        <div>
+                            <Label className="mb-2 text-sm font-medium">
+                                {t('audio_language_preference')}
+                            </Label>
+                            <LanguageCombobox
+                                selected={user.Configuration?.AudioLanguagePreference || ''}
+                                onSelect={(code) => {
+                                    updateUserConfiguration.mutate({
+                                        userId: user.Id!,
+                                        playbackPreferences: { AudioLanguagePreference: code },
+                                    });
+                                    setAudioLanguageOpen(false);
+                                }}
+                                open={audioLanguageOpen}
+                                onOpenChange={setAudioLanguageOpen}
+                            />
+                        </div>
+                        <div>
+                            <Label className="mb-2 text-sm font-medium">
+                                {t('subtitle_language_preference')}
+                            </Label>
+                            <LanguageCombobox
+                                selected={user.Configuration?.SubtitleLanguagePreference || ''}
+                                onSelect={(code) => {
+                                    updateUserConfiguration.mutate({
+                                        userId: user.Id!,
+                                        playbackPreferences: { SubtitleLanguagePreference: code },
+                                    });
+                                    setSubtitleLanguageOpen(false);
+                                }}
+                                open={subtitleLanguageOpen}
+                                onOpenChange={setSubtitleLanguageOpen}
+                            />
+                        </div>
+                        <div>
+                            <Label className="mb-2 text-sm font-medium">
+                                {t('theme_preference')}
+                            </Label>
+                            <Select
+                                value={localTheme || undefined}
+                                onValueChange={(val) => {
+                                    if (val === LOCAL_THEME_SERVER_DEFAULT) clearLocalTheme();
+                                    else saveLocalTheme(val);
+                                    setLocalTheme(val);
+                                }}
+                            >
+                                <SelectTrigger className="w-full">
+                                    <SelectValue placeholder={t('select_theme')} />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectGroup>
+                                        <SelectItem value={LOCAL_THEME_SERVER_DEFAULT}>
+                                            {t('server_default')}
+                                        </SelectItem>
+                                        <SelectItem value={LOCAL_THEME_PELAGICA_DEFAULT}>
+                                            {t('pelagica_default')}
+                                        </SelectItem>
+                                    </SelectGroup>
+                                    {!isLoadingThemes && themes && (
+                                        <SelectGroup>
+                                            <SelectLabel>Custom Themes</SelectLabel>
+                                            {themes.map((th) => (
+                                                <SelectItem key={th.id} value={th.id}>
+                                                    {th.name}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectGroup>
+                                    )}
+                                </SelectContent>
+                            </Select>
+                        </div>
+                    </DialogContent>
+                </Dialog>
+
+                <DropdownMenuSeparator />
+
+                {config?.seerrUrl && (
+                    <>
+                        <DropdownMenuSub>
+                            <DropdownMenuSubTrigger
+                                className={
+                                    isSeerrLoggedIn === false
+                                        ? 'text-amber-500 focus:text-amber-500 data-[state=open]:text-amber-500'
+                                        : undefined
+                                }
+                            >
+                                {isSeerrLoggedIn === false ? (
+                                    <TriangleAlert className="text-amber-500" />
+                                ) : (
+                                    <Telescope className="text-muted-foreground" />
+                                )}
+                                {isSeerrLoggedIn === false
+                                    ? t('seerr_not_connected')
+                                    : t('seerr_connected')}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuPortal>
+                                <DropdownMenuSubContent>
+                                    <DropdownMenuItem asChild>
+                                        <ExternalAnchor
+                                            href={config.seerrUrl}
+                                            className="flex items-center gap-2"
+                                        >
+                                            <ExternalLink />
+                                            {t('seerr_open')}
+                                        </ExternalAnchor>
+                                    </DropdownMenuItem>
+                                    {isSeerrLoggedIn === false ? (
+                                        <SeerrLoginDialog
+                                            trigger={
+                                                <DropdownMenuItem
+                                                    onSelect={(e) => e.preventDefault()}
+                                                >
+                                                    <LogIn className="text-muted-foreground" />
+                                                    {t('seerr_login_action')}
+                                                </DropdownMenuItem>
+                                            }
+                                        />
+                                    ) : (
+                                        <DropdownMenuItem
+                                            onClick={() =>
+                                                seerrLogout.mutate(undefined, {
+                                                    onSuccess: () =>
+                                                        toast.success(t('seerr_logout_success')),
+                                                })
+                                            }
+                                        >
+                                            <LogOut className="text-muted-foreground" />
+                                            {t('seerr_logout_action')}
+                                        </DropdownMenuItem>
+                                    )}
+                                </DropdownMenuSubContent>
+                            </DropdownMenuPortal>
+                        </DropdownMenuSub>
+                    </>
+                )}
+
+                <AuthorizeQuickConnectDialog
+                    onAuthorize={onAuthorizeQuickConnect}
+                    isLoading={quickConnectLoading}
+                    hasSuccess={quickConnectSuccess}
+                    hasError={quickConnectError}
+                />
+
+                {isAdmin && (
+                    <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem asChild>
+                            <Link to="/settings">
+                                <Settings className="text-muted-foreground" />
+                                {t('pelagica_config')}
+                            </Link>
+                        </DropdownMenuItem>
+                    </>
+                )}
+
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                    onClick={() => {
+                        logout(queryClient).then(() => {
+                            navigate('/login', { replace: true });
+                        });
+                    }}
+                >
+                    <LogOut />
+                    {t('logout')}
+                </DropdownMenuItem>
+            </DropdownMenuContent>
+        </DropdownMenu>
+    );
+};
+
+const TopBar = ({ overlay = false }: { overlay?: boolean }) => {
+    const { t } = useTranslation('sidebar');
+    const { config } = useConfig();
+    const { data: views } = useUserViews();
+    const { theme } = useTheme();
+    const effectiveTheme = getEffectiveTheme(theme);
+    const [scrolled, setScrolled] = useState(false);
+    const navigate = useNavigate();
+    const isDesktop = isDesktopApp();
+    const isWindowsOrLinux = isDesktop && !isMacOS();
+    const [isMaximised, setIsMaximised] = useState(false);
+
+    useEffect(() => {
+        const handleScroll = () => {
+            setScrolled(window.scrollY > 20);
+        };
+
+        handleScroll();
+
+        window.addEventListener('scroll', handleScroll);
+
+        return () => window.removeEventListener('scroll', handleScroll);
+    }, []);
+
+    useEffect(() => {
+        if (!isWindowsOrLinux) return;
+        isWindowMaximised().then(setIsMaximised);
+        return onWindowMaximiseChange(setIsMaximised);
+    }, [isWindowsOrLinux]);
+
+    const defaultLogo = withBasePath(effectiveTheme === 'dark' ? '/logo.svg' : '/logo-dark.svg');
+    const configuredLogo =
+        effectiveTheme === 'dark' ? config?.logoDarkUrl || '' : config?.logoLightUrl || '';
+    const logoSrc = configuredLogo || defaultLogo;
+
+    const libraries =
+        views?.Items?.filter((lib) =>
+            SUPPORTED_LIBRARY_COLLECTION_TYPES.includes(lib.CollectionType!)
+        ) ?? [];
+
+    const hasMusicLibrary = libraries.some((lib) => lib.CollectionType === 'music');
+    const hasLiveTvLibrary = views?.Items?.some((lib) => lib.CollectionType === 'livetv') ?? false;
+
+    const validLinks = config?.links?.filter((l) => l.url && l.text) ?? [];
+
+    const goback = () => {
+        navigate(-1);
+    };
+
+    const goforward = () => {
+        navigate(1);
+    };
+
+    return (
+        <header
+            className={cn(
+                'fixed top-0 z-50 w-full h-17 flex items-center justify-center',
+                isWindowsOrLinux ? 'pointer-events-auto' : 'pointer-events-none'
+            )}
+            style={
+                isWindowsOrLinux ? ({ '--wails-draggable': 'drag' } as CSSProperties) : undefined
+            }
+        >
+            {overlay && !scrolled && (
+                <div className="pointer-events-none absolute inset-0 -bottom-5 bg-linear-to-b from-background/70 to-transparent" />
+            )}
+
+            {isDesktop && isMacOS() && (
+                <div
+                    className={cn(
+                        'pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 h-11 w-21 rounded-full border transition-all duration-300',
+                        !overlay || scrolled
+                            ? 'border-border bg-background/60 backdrop-blur shadow-sm'
+                            : 'border-white/10 bg-background/20 backdrop-blur-md'
+                    )}
+                />
+            )}
+
+            {isDesktop && (
+                <div
+                    className={cn(
+                        'pointer-events-auto absolute top-1/2 -translate-y-1/2 flex h-11 items-center px-1 w-full md:w-auto rounded-full transition-all duration-300 border',
+                        'justify-between md:justify-start gap-0.5',
+                        isMacOS() ? 'right-2' : 'left-2',
+                        !overlay || scrolled
+                            ? 'border-border bg-background/60 backdrop-blur shadow-sm'
+                            : 'border-white/10 bg-background/20 backdrop-blur-md'
+                    )}
+                    style={noDragStyle}
+                >
+                    <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={goback}
+                        className="h-9 w-9 rounded-l-full"
+                    >
+                        <ChevronLeft />
+                    </Button>
+                    <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={goforward}
+                        className="h-9 w-9 rounded-r-full"
+                    >
+                        <ChevronRight />
+                    </Button>
+                </div>
+            )}
+
+            {isWindowsOrLinux && (
+                <div
+                    className={cn(
+                        'pointer-events-auto absolute right-2 top-1/2 -translate-y-1/2 flex h-11 items-center px-1 rounded-full transition-all duration-300 border gap-0.5',
+                        !overlay || scrolled
+                            ? 'border-border bg-background/60 backdrop-blur shadow-sm'
+                            : 'border-white/10 bg-background/20 backdrop-blur-md'
+                    )}
+                    style={noDragStyle}
+                >
+                    <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={() => minimiseWindow()}
+                        className="h-9 w-9 rounded-l-full"
+                    >
+                        <Minus className="h-4 w-4" />
+                    </Button>
+                    <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={() => toggleMaximiseWindow()}
+                        className="h-9 w-9 rounded-none"
+                    >
+                        {isMaximised ? (
+                            <Copy className="h-3.5 w-3.5" />
+                        ) : (
+                            <Square className="h-3.5 w-3.5" />
+                        )}
+                    </Button>
+                    <Button
+                        size="icon-sm"
+                        variant="ghost"
+                        onClick={() => closeWindow()}
+                        className="h-9 w-9 rounded-r-full hover:bg-destructive hover:text-white"
+                    >
+                        <X className="h-4 w-4" />
+                    </Button>
+                </div>
+            )}
+
+            <div
+                className={cn(
+                    'pointer-events-auto relative flex h-11 items-center px-2 sm:px-4 mx-3 w-full md:w-auto rounded-full transition-all duration-300 border',
+                    'justify-between md:justify-start gap-1 md:gap-2',
+                    !overlay || scrolled
+                        ? 'border-border bg-background/60 backdrop-blur shadow-sm'
+                        : 'border-white/10 bg-background/20 backdrop-blur-md'
+                )}
+                style={noDragStyle}
+            >
+                <div className="flex items-center gap-1 md:gap-2">
+                    {/* Logo */}
+                    {config?.showLogoInTopBar !== false && (
+                        <Link to="/" className="flex items-center shrink-0">
+                            <Avatar className="h-6 w-6 p-0.5 rounded-md">
+                                <AvatarImage src={logoSrc} alt="logo" />
+                                <AvatarFallback className="rounded-md text-xs">PE</AvatarFallback>
+                            </Avatar>
+                        </Link>
+                    )}
+
+                    {/* Desktop nav */}
+                    <nav className="hidden md:flex items-center gap-0.5">
+                        <Button asChild variant="ghost" size="sm">
+                            <Link to="/">
+                                <House className="h-4 w-4" />
+                                {t('home')}
+                            </Link>
+                        </Button>
+
+                        <Button asChild variant="ghost" size="sm">
+                            <Link to="/library">
+                                <Library className="h-4 w-4" />
+                                {t('library')}
+                            </Link>
+                        </Button>
+
+                        {hasMusicLibrary && (
+                            <Button asChild variant="ghost" size="sm">
+                                <Link to="/music">
+                                    <Music className="h-4 w-4" />
+                                    {t('music')}
+                                </Link>
+                            </Button>
+                        )}
+
+                        {hasLiveTvLibrary && (
+                            <Button asChild variant="ghost" size="sm">
+                                <Link to="/live">
+                                    <Tv className="h-4 w-4" />
+                                    {t('live')}
+                                </Link>
+                            </Button>
+                        )}
+
+                        <Button asChild variant="ghost" size="sm">
+                            <Link to="/search">
+                                <Search className="h-4 w-4" />
+                                {t('search')}
+                            </Link>
+                        </Button>
+
+                        {config?.streamystatsUrl && config?.showStreamystatsButton && (
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() =>
+                                    config.streamystatsUrl &&
+                                    openExternalUrl(config.streamystatsUrl)
+                                }
+                                className="cursor-pointer"
+                            >
+                                <ChartLine className="h-4 w-4" />
+                                Streamystats
+                            </Button>
+                        )}
+
+                        {validLinks.map((link, i) => (
+                            <Button
+                                key={i}
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openExternalUrl(link.url)}
+                                className="cursor-pointer"
+                            >
+                                <DynamicIcon
+                                    name={(link.icon || 'link-2') as IconName}
+                                    className="h-4 w-4"
+                                />
+                                {link.text}
+                            </Button>
+                        ))}
+                    </nav>
+
+                    {/* Mobile nav */}
+                    <nav className="flex md:hidden items-center gap-0.5">
+                        <Button asChild variant="ghost" size="icon" className="h-8 w-8">
+                            <Link to="/">
+                                <House className="h-4 w-4" />
+                            </Link>
+                        </Button>
+
+                        <Button asChild variant="ghost" size="icon" className="h-8 w-8">
+                            <Link to="/library">
+                                <Library className="h-4 w-4" />
+                            </Link>
+                        </Button>
+
+                        {hasMusicLibrary && (
+                            <Button asChild variant="ghost" size="icon" className="h-8 w-8">
+                                <Link to="/music">
+                                    <Music className="h-4 w-4" />
+                                </Link>
+                            </Button>
+                        )}
+
+                        {hasLiveTvLibrary && (
+                            <Button asChild variant="ghost" size="icon" className="h-8 w-8">
+                                <Link to="/live">
+                                    <Tv className="h-4 w-4" />
+                                </Link>
+                            </Button>
+                        )}
+
+                        <Button asChild variant="ghost" size="icon" className="h-8 w-8">
+                            <Link to="/search">
+                                <Search className="h-4 w-4" />
+                            </Link>
+                        </Button>
+
+                        {validLinks.map((link, i) => (
+                            <Button
+                                key={i}
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openExternalUrl(link.url)}
+                            >
+                                <DynamicIcon
+                                    name={(link.icon || 'link-2') as IconName}
+                                    className="h-4 w-4"
+                                />
+                            </Button>
+                        ))}
+                    </nav>
+                </div>
+
+                <UserMenu />
+            </div>
+        </header>
+    );
+};
+
+export default TopBar;

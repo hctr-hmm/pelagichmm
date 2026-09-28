@@ -1,0 +1,84 @@
+# Stage 1: Build frontend
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY frontend/package.json frontend/package.json
+COPY tizen/package.json tizen/package.json
+COPY packages/core/package.json packages/core/package.json
+COPY packages/tv-frontend/package.json packages/tv-frontend/package.json
+COPY packages/tv-platform/package.json packages/tv-platform/package.json
+RUN npm install -g pnpm \
+    && pnpm install --frozen-lockfile --filter pelagica...
+
+COPY packages/core packages/core
+COPY frontend frontend
+ARG BASE_PATH=
+RUN BASE_PATH=$BASE_PATH pnpm --filter pelagica run build
+
+
+# Stage 2: Build backend
+FROM golang:1.25-alpine AS backend-builder
+
+WORKDIR /backend
+
+ARG TARGETOS
+ARG TARGETARCH
+
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+
+COPY backend .
+RUN CGO_ENABLED=0 \
+    GOOS=$TARGETOS \
+    GOARCH=$TARGETARCH \
+    go build -o server ./
+
+
+# Stage 3: Final image
+FROM nginx:alpine
+
+ARG APP_VERSION
+ARG COLLECTOR_PING_TOKEN
+
+# runtime essentials
+RUN apk add --no-cache ca-certificates tzdata
+
+# frontend
+ARG BASE_PATH=
+# drop the nginx default page so a base-path build serves nothing at /
+RUN rm -f /usr/share/nginx/html/index.html /usr/share/nginx/html/50x.html
+COPY --from=frontend-builder /app/frontend/dist /usr/share/nginx/html${BASE_PATH}
+
+# backend
+COPY --from=backend-builder /backend/server /server
+COPY --from=backend-builder /backend/default.theme.json /default.theme.json
+
+# nginx config
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+RUN sed -i "s|__BASE_PATH__|${BASE_PATH}|g" \
+        /etc/nginx/conf.d/default.conf \
+        /usr/share/nginx/html${BASE_PATH}/manifest.webmanifest
+
+# config directory (volume-friendly)
+RUN mkdir -p /config
+
+ENV APP_VERSION=$APP_VERSION
+ENV PORT=4321
+ENV LOG_LEVEL=info
+ENV LOG_FILE=/config/logs/pelagica.log
+ENV ENABLE_AUTH=true
+ENV SERVERS_DIR=/config/servers
+ENV STUDIOS_DB_DIR=/config/studios_db
+ENV DEFAULT_THEME_PATH=/default.theme.json
+ENV THEMES_REPO_BASE_URL=https://themes.pelagica.app/
+ENV COLLECTOR_PING_BASE_URL=https://stats.pelagica.app
+ENV COLLECTOR_PING_TOKEN=$COLLECTOR_PING_TOKEN
+ENV COLLECTOR_INSTANCE_ID_FILE=/config/instance_id
+ENV COLLECTOR_STATS_CONSENT_FILE=/config/stats_consent
+
+EXPOSE 80
+
+# start backend + nginx
+CMD ["/bin/sh", "-c", "exec /server & exec nginx -g 'daemon off;'"]

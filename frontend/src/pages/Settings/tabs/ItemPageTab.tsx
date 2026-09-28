@@ -1,0 +1,148 @@
+import { useTranslation } from 'react-i18next';
+import {
+    COLLECTION_SORT_OPTIONS,
+    DETAIL_BADGES,
+    EPISODE_DISPLAYS,
+    SERIES_VIEWS,
+    type AppConfig,
+    type CollectionSortOption,
+    type DetailBadge,
+} from '@pelagica/core';
+import type { BaseItemKind } from '@jellyfin/sdk/lib/generated-client/models';
+import { BooleanInput, SelectInput, MultiSelectInput } from '../components/SettingsInputs';
+
+export const ItemPageTab = ({
+    config,
+    saveConfig,
+}: {
+    config: AppConfig;
+    saveConfig: (updater: (prev: AppConfig) => AppConfig) => void;
+}) => {
+    const { t } = useTranslation('settings');
+    const itemPage = config.itemPage || {};
+
+    const updateItemPage = (partial: Partial<typeof itemPage>) => {
+        saveConfig((prev) => ({
+            ...prev,
+            itemPage: { ...prev.itemPage, ...partial },
+        }));
+    };
+
+    return (
+        <div className="max-w-200">
+            <h1 className="mb-2 mt-2 text-2xl font-bold leading-none tracking-tight">
+                {t('category_itempage')}
+            </h1>
+            <SelectInput
+                label={t('episode_display_label')}
+                options={EPISODE_DISPLAYS.map((display) => ({
+                    value: display,
+                    label: t(`episode_display_${display}`),
+                }))}
+                value={itemPage.episodeDisplay || 'row'}
+                onChange={(value) => updateItemPage({ episodeDisplay: value as 'grid' | 'row' })}
+                description={t('episode_display_description')}
+            />
+            <SelectInput
+                label={t('series_view_label')}
+                options={SERIES_VIEWS.map((view) => ({
+                    value: view,
+                    label: t(`series_view_${view}`),
+                }))}
+                value={itemPage.seriesView || 'episodes'}
+                onChange={(value) =>
+                    updateItemPage({ seriesView: value as 'episodes' | 'seasons' })
+                }
+                description={t('series_view_description')}
+            />
+            <BooleanInput
+                label={t('show_watchlist_button_label')}
+                checked={itemPage.showWatchlistButton || false}
+                onChange={(checked) => updateItemPage({ showWatchlistButton: checked })}
+            />
+            <BooleanInput
+                label={t('show_download_button_label')}
+                checked={itemPage.showDownloadButton || false}
+                onChange={(checked) => updateItemPage({ showDownloadButton: checked })}
+            />
+            <BooleanInput
+                label={t('auto_play_trailers_label')}
+                checked={itemPage.autoPlayTrailers || false}
+                onChange={(checked) => updateItemPage({ autoPlayTrailers: checked })}
+            />
+            <BooleanInput
+                label={t('auto_play_theme_songs_label', {
+                    defaultValue: 'Autoplay Theme Songs on Item Pages',
+                })}
+                checked={itemPage.autoPlayThemeSongs || false}
+                onChange={(checked) => updateItemPage({ autoPlayThemeSongs: checked })}
+            />
+            {itemPage.autoPlayThemeSongs && (
+                <SelectInput
+                    label={t('theme_song_volume_label', { defaultValue: 'Theme Song Volume' })}
+                    options={[10, 25, 50, 75, 100].map((volume) => ({
+                        value: volume.toString(),
+                        label: `${volume}%`,
+                    }))}
+                    value={(itemPage.themeSongVolume ?? 25).toString()}
+                    onChange={(value) => updateItemPage({ themeSongVolume: Number(value) })}
+                    description={t('theme_song_volume_description', {
+                        defaultValue: 'Volume used for theme music on movie and series pages.',
+                    })}
+                />
+            )}
+            <BooleanInput
+                label={t('show_collections_label')}
+                checked={itemPage.showCollections !== false}
+                onChange={(checked) => updateItemPage({ showCollections: checked })}
+            />
+            {itemPage.showCollections !== false && (
+                <SelectInput
+                    label={t('collection_sort_label')}
+                    options={COLLECTION_SORT_OPTIONS.map((option) => ({
+                        value: option,
+                        label: t(`collection_sort_${option}`),
+                    }))}
+                    value={itemPage.collectionSort || 'PremiereDateAsc'}
+                    onChange={(value) =>
+                        updateItemPage({ collectionSort: value as CollectionSortOption })
+                    }
+                    description={t('collection_sort_description')}
+                />
+            )}
+            <MultiSelectInput
+                label={t('favorite_button_types_label')}
+                options={[
+                    { value: 'Movie', label: t('movie') },
+                    { value: 'Series', label: t('series') },
+                    { value: 'Episode', label: t('episode') },
+                    { value: 'BoxSet', label: t('box_set') },
+                    { value: 'MusicArtist', label: t('artist') },
+                    { value: 'MusicAlbum', label: t('music_album') },
+                    { value: 'Playlist', label: t('playlist') },
+                ]}
+                selected={(itemPage.favoriteButton as string[]) || []}
+                onChange={(selected) =>
+                    updateItemPage({
+                        favoriteButton: selected.length > 0 ? (selected as BaseItemKind[]) : [],
+                    })
+                }
+                description={t('favorite_button_types_description')}
+            />
+            <MultiSelectInput
+                label={t('detail_badges_label')}
+                options={DETAIL_BADGES.map((badge) => ({
+                    value: badge,
+                    label: t(`detail_badges_${badge}`),
+                }))}
+                selected={(itemPage.detailBadges as string[]) || []}
+                onChange={(selected) =>
+                    updateItemPage({
+                        detailBadges: selected.length > 0 ? (selected as DetailBadge[]) : [],
+                    })
+                }
+                description={t('detail_badges_description')}
+            />
+        </div>
+    );
+};

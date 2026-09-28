@@ -1,0 +1,77 @@
+version: '3'
+
+includes:
+    frontend:
+        taskfile: ./frontend/Taskfile.yml
+        dir: ./frontend
+        flatten: true
+    backend:
+        taskfile: ./backend/Taskfile.yml
+        dir: ./backend
+        flatten: true
+    desktop:
+        taskfile: ./desktop/Taskfile.yml
+        dir: ./desktop
+    tizen:
+        taskfile: ./tizen/Taskfile.yml
+        dir: ./tizen
+    webos:
+        taskfile: ./webos/Taskfile.yml
+        dir: ./webos
+    tv-frontend:
+        taskfile: ./packages/tv-frontend/Taskfile.yml
+        dir: ./packages/tv-frontend
+
+tasks:
+    dev:
+        desc: Start backend and frontend in parallel
+        deps:
+            - backend
+            - frontend
+
+    checkup:
+        desc: Run all checks (lint, format, and tests)
+        deps:
+            - lint
+            - format:check
+            - tv-frontend:format:check
+            - tv-frontend:lint
+            - tizen:format:check
+            - tizen:lint
+            - webos:format:check
+            - webos:lint
+
+    version:
+        desc: "Set the app version everywhere it's tracked (usage: task version VERSION=1.2.3)"
+        preconditions:
+            - sh: '[ -n "{{.VERSION}}" ]'
+              msg: 'Usage: task version VERSION=1.2.3'
+        cmds:
+            - task: set-frontend-version
+              vars:
+                  VERSION: '{{.VERSION}}'
+            - task: tizen:set-tizen-version
+              vars:
+                  VERSION: '{{.VERSION}}'
+            - task: webos:set-webos-version
+              vars:
+                  VERSION: '{{.VERSION}}'
+            - cmd: 'perl -i -pe "s/APP_VERSION: ''.*''/APP_VERSION: ''{{.VERSION}}''/" backend/Taskfile.yml'
+            - cmd: 'perl -i -pe "s/^    version: ''.*''/    version: ''{{.VERSION}}''/" desktop/build/config.yml'
+            - perl desktop/build/set-versions.pl {{.VERSION}}
+            - 'echo "Version set to {{.VERSION}} in frontend/package.json, tizen/package.json, tizen/public/config.xml, webos/package.json, webos/public/appinfo.json, backend/Taskfile.yml, and desktop/build/config.yml"'
+
+    docker:
+        desc: Build and run the local Docker image
+        cmds:
+            - docker compose -f docker-compose.local.yml up --build
+
+    docker:stop:
+        desc: Stop the local Docker container
+        cmds:
+            - docker compose -f docker-compose.local.yml down
+
+    stats:
+        desc: Count the amount of lines of code
+        cmds:
+            - cloc . --exclude-dir=dist,node_modules --not-match-f="(pnpm-lock|package-lock|yarn\.lock)"
